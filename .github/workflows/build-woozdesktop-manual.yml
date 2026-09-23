@@ -1,0 +1,87 @@
+name: Build WoozDesktop APK Manual
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - '.github/workflows/build-woozdesktop-manual.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout WoozDesktop source
+        uses: actions/checkout@v4
+        with:
+          ref: woozdesktop-build-20260922
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Locate Android tools
+        shell: bash
+        run: |
+          SDK=/usr/local/lib/android/sdk
+          ANDROID_JAR=$(find "$SDK/platforms" -type f -name android.jar | sort -V | tail -1)
+          BUILD_DIR=$(find "$SDK/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)
+          test -n "$ANDROID_JAR"
+          test -n "$BUILD_DIR"
+          test -x "$BUILD_DIR/aapt2"
+          test -x "$BUILD_DIR/d8"
+          test -x "$BUILD_DIR/zipalign"
+          test -x "$BUILD_DIR/apksigner"
+          echo "ANDROID_JAR=$ANDROID_JAR" >> "$GITHUB_ENV"
+          echo "AAPT2=$BUILD_DIR/aapt2" >> "$GITHUB_ENV"
+          echo "D8=$BUILD_DIR/d8" >> "$GITHUB_ENV"
+          echo "ZIPALIGN=$BUILD_DIR/zipalign" >> "$GITHUB_ENV"
+          echo "APKSIGNER=$BUILD_DIR/apksigner" >> "$GITHUB_ENV"
+
+      - name: Compile Android resources
+        shell: bash
+        run: |
+          rm -rf /tmp/woozbuild
+          mkdir -p /tmp/woozbuild/gen /tmp/woozbuild/classes /tmp/woozbuild/dex
+          "$AAPT2" compile --dir woozdesktop/app/src/main/res -o /tmp/woozbuild/resources.zip
+          "$AAPT2" link             -o /tmp/woozbuild/base.apk             -I "$ANDROID_JAR"             --manifest woozdesktop/app/src/main/AndroidManifest.xml             --java /tmp/woozbuild/gen             --min-sdk-version 26             --target-sdk-version 35             -R /tmp/woozbuild/resources.zip
+
+      - name: Compile Java and DEX
+        shell: bash
+        run: |
+          find woozdesktop/app/src/main/java /tmp/woozbuild/gen -name '*.java' > /tmp/woozbuild/sources.txt
+          javac -source 8 -target 8 -classpath "$ANDROID_JAR" -d /tmp/woozbuild/classes @/tmp/woozbuild/sources.txt
+          find /tmp/woozbuild/classes -name '*.class' > /tmp/woozbuild/classes.txt
+          "$D8" --lib "$ANDROID_JAR" --min-api 26 --output /tmp/woozbuild/dex @/tmp/woozbuild/classes.txt
+          cp /tmp/woozbuild/base.apk /tmp/woozbuild/unsigned.apk
+          cd /tmp/woozbuild/dex
+          zip -q -j /tmp/woozbuild/unsigned.apk classes.dex
+
+      - name: Align and sign APK
+        shell: bash
+        run: |
+          "$ZIPALIGN" -p -f 4 /tmp/woozbuild/unsigned.apk /tmp/woozbuild/aligned.apk
+          keytool -genkeypair -v             -keystore /tmp/woozbuild/debug.keystore             -storepass android             -alias androiddebugkey             -keypass android             -dname "CN=Android Debug,O=Android,C=US"             -keyalg RSA -keysize 2048 -validity 10000
+          "$APKSIGNER" sign             --ks /tmp/woozbuild/debug.keystore             --ks-pass pass:android             --key-pass pass:android             --out /tmp/WoozDesktop-v0.1.apk             /tmp/woozbuild/aligned.apk
+          "$APKSIGNER" verify --verbose /tmp/WoozDesktop-v0.1.apk
+          sha256sum /tmp/WoozDesktop-v0.1.apk | awk '{print $1}' > /tmp/SHA256.txt
+
+      - name: Publish APK
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout --orphan woozdesktop-apk-output-temp
+          git rm -rf . >/dev/null 2>&1 || true
+          mkdir -p release
+          cp /tmp/WoozDesktop-v0.1.apk release/WoozDesktop-v0.1.apk
+          cp /tmp/SHA256.txt release/SHA256.txt
+          echo "WoozDesktop Android APK" > README.md
+          git add -f release/WoozDesktop-v0.1.apk release/SHA256.txt README.md
+          git commit -m "Publish WoozDesktop APK"
+          git push origin HEAD:woozdesktop-apk-output --force
