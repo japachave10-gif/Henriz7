@@ -33,7 +33,6 @@ jobs:
           SDKMANAGER=$(find /usr/local/lib/android/sdk/cmdline-tools -type f -name sdkmanager 2>/dev/null | head -1)
           if [ -z "$SDKMANAGER" ]; then
             echo "sdkmanager not found"
-            find /usr/local/lib/android/sdk -maxdepth 4 -type f -name sdkmanager || true
             exit 1
           fi
           echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
@@ -49,13 +48,12 @@ jobs:
         working-directory: woozdesktop
         run: gradle --no-daemon assembleDebug
 
-      - name: Prepare APK output
+      - name: Stage APK outside worktree
         shell: bash
         run: |
           test -f woozdesktop/app/build/outputs/apk/debug/app-debug.apk
-          mkdir -p release
-          cp woozdesktop/app/build/outputs/apk/debug/app-debug.apk release/WoozDesktop-v0.1.apk
-          sha256sum release/WoozDesktop-v0.1.apk > release/SHA256.txt
+          cp woozdesktop/app/build/outputs/apk/debug/app-debug.apk /tmp/WoozDesktop-v0.1.apk
+          sha256sum /tmp/WoozDesktop-v0.1.apk | awk '{print $1}' > /tmp/SHA256.txt
 
       - name: Publish APK to output branch
         shell: bash
@@ -65,8 +63,8 @@ jobs:
           git checkout --orphan woozdesktop-apk-output-temp
           git rm -rf . >/dev/null 2>&1 || true
           mkdir -p release
-          cp /home/runner/work/Henriz7/Henriz7/release/WoozDesktop-v0.1.apk release/WoozDesktop-v0.1.apk
-          cp /home/runner/work/Henriz7/Henriz7/release/SHA256.txt release/SHA256.txt
+          cp /tmp/WoozDesktop-v0.1.apk release/WoozDesktop-v0.1.apk
+          cp /tmp/SHA256.txt release/SHA256.txt
           echo "WoozDesktop Android build" > README.md
           git add -f release/WoozDesktop-v0.1.apk release/SHA256.txt README.md
           git commit -m "Publish WoozDesktop APK"
